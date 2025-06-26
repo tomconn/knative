@@ -6,6 +6,8 @@ set -e
 # --- Configuration ---
 CLUSTER_PROFILE="knative-demo" # A unique name for your minikube profile
 TUNNEL_PID_FILE="/tmp/minikube_${CLUSTER_PROFILE}_tunnel.pid"
+KNATIVE_VERSION="v1.18.0"
+KUBERNETES_VERSION="v1.32.6"
 
 # --- Helper Functions ---
 function check_command() {
@@ -36,7 +38,12 @@ case "$ACTION" in
           --driver=docker \
           --cpus=4 \
           --memory=7g \
-          --kubernetes-version=v1.32.6
+          --kubernetes-version=${KUBERNETES_VERSION}
+
+        minikube profile "${CLUSTER_PROFILE}"
+
+        echo "--- Waiting for Kubernetes API server to be ready ---"
+        kubectl wait --for=condition=Available=True deployment/coredns -n kube-system --timeout=300s
 
         echo "--- Starting Minikube Tunnel in the background (BEFORE Knative install) ---"
         # The tunnel must be running *before* installing Kourier so it can get an IP.
@@ -48,16 +55,42 @@ case "$ACTION" in
         minikube tunnel --profile "${CLUSTER_PROFILE}" &
         echo $! > "$TUNNEL_PID_FILE"
         echo "Tunnel started with PID $(cat $TUNNEL_PID_FILE). Giving it a moment to establish..."
-        sleep 20 # Give tunnel a generous amount of time to be ready, in X seconds
+        sleep 10 # Give tunnel a generous amount of time to be ready, in X seconds
+
+
+        # ===================================================================
+        # STEP 3: Install Knative APPLICATIONS onto the cluster
+        # This is where Kourier is actually installed.
+        # ===================================================================
+        echo "--- Installing Knative Serving ---"
+        kubectl apply -f https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml
+        kubectl apply -f https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml
+
+        echo "--- Installing Kourier networking layer ---"
+        # THIS LINE INSTALLS KOURIER
+        kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-${KNATIVE_VERSION}/kourier.yaml
+
+        echo "--- Configuring Knative Serving to use Kourier ---"
+        # THIS LINE TELLS KNATIVE TO USE THE KOURIER WE JUST INSTALLED
+        kubectl patch configmap/config-network \
+          --namespace knative-serving \
+          --type merge \
+          --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+
+        echo "--- Installing Knative Eventing ---"
+        kubectl apply -f https://github.com/knative/eventing/releases/download/knative-${KNATIVE_VERSION}/eventing-crds.yaml
+        kubectl apply -f https://github.com/knative/eventing/releases/download/knative-${KNATIVE_VERSION}/eventing-core.yaml
+
+        # ===================================================================
+        # STEP 4: Wait for all installed applications to become ready
+        # ===================================================================
+        echo "--- Waiting for all Knative components to be ready ---"
+        kubectl wait --for=condition=Available=True deployment --all -n knative-serving --timeout=300s
+        kubectl wait --for=condition=Available=True deployment --all -n knative-eventing --timeout=300s
+        kubectl wait --for=condition=Available=True deployment --all -n kourier-system --timeout=300s
 
         echo "--- Setting docker-env for minikube ---"
-        eval $(minikube -p "${CLUSTER_PROFILE}" docker-env)
-
-        echo "--- Installing Knative Serving and Eventing using Quickstart ---"
-        echo "--- IMPORTANT: A prompt will appear to start the tunnel. It is already running. ---"
-        echo "---           Please just press the ENTER key to continue.                   ---"
-        
-        kn quickstart minikube --name "${CLUSTER_PROFILE}" --install-serving --install-eventing
+        #eval $(minikube -p "${CLUSTER_PROFILE}" docker-env)
 
         echo "--- Cluster is READY! ---"
         echo "Minikube Profile: ${CLUSTER_PROFILE}"
