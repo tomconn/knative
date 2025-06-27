@@ -48,7 +48,7 @@ function start_cluster() {
       --profile "${CLUSTER_PROFILE}" \
       --driver=docker \
       --cpus=4 \
-      --memory=4g \
+      --memory=7g \
       --kubernetes-version=${KUBERNETES_VERSION}
 
     minikube profile "${CLUSTER_PROFILE}"
@@ -112,6 +112,8 @@ function verify_installation() {
        exit 1
     fi
 
+    configure_domain
+
     echo ""
     echo "✅✅✅ --- Cluster is READY! --- ✅✅✅"
     echo ""
@@ -122,6 +124,24 @@ function verify_installation() {
     echo "   Tunnel PID:         $(cat $TUNNEL_PID_FILE) (running in background)"
     echo ""
     echo "Tip: To enable easy browser access, configure a domain like sslip.io."
+}
+
+function configure_domain() {
+    echo "--- 8. Configuring sslip.io domain for easy access ---"
+    local EXTERNAL_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+    if [ -z "$EXTERNAL_IP" ]; then
+        echo "   Could not determine Kourier IP. Skipping domain configuration."
+        return
+    fi
+
+    echo "   Patching Knative domain to use: $EXTERNAL_IP.sslip.io"
+    kubectl patch configmap/config-domain \
+      --namespace knative-serving \
+      --type merge \
+      --patch "{\"data\":{\"$EXTERNAL_IP.sslip.io\":\"\"}}"
+    
+    echo "   Domain configured. Services will now use sslip.io URLs."
 }
 
 function stop_tunnel() {
