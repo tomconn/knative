@@ -1,23 +1,150 @@
 #!/bin/bash
 
+# ==============================================================================
+# Knative/Minikube Cluster Management Script for macOS (Functional Version)
+#
+# This script provides a reliable, structured way to start and destroy a
+# Knative development environment using Minikube with the Docker driver.
+#
+# Usage:
+#   ./manage-knative-cluster.sh start      - Creates the cluster and installs Knative.
+#   ./manage-knative-cluster.sh destroy    - Stops the tunnel and deletes the cluster.
+#
+# ==============================================================================
+
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
 # --- Configuration ---
-CLUSTER_PROFILE="knative-demo" # A unique name for your minikube profile
+CLUSTER_PROFILE="knative-demo"
 TUNNEL_PID_FILE="/tmp/minikube_${CLUSTER_PROFILE}_tunnel.pid"
+
+# Pin versions for a stable, repeatable environment.
 KNATIVE_VERSION="v1.18.0"
 KUBERNETES_VERSION="v1.32.6"
 
+# ==============================================================================
 # --- Helper Functions ---
-function check_command() {
-    if ! command -v $1 &> /dev/null; then
-        echo "Error: Command '$1' not found. Please install it."
+# ==============================================================================
+
+function check_prerequisites() {
+    echo "--- 1. Checking prerequisites ---"
+    local has_error=0
+    for cmd in minikube kubectl docker; do
+        if ! command -v $cmd &> /dev/null; then
+            echo "❌ Error: Command '$cmd' not found. Please install it."
+            has_error=1
+        fi
+    done
+    if [ "$has_error" -eq 1 ]; then
         exit 1
+    fi
+    echo "✅ All prerequisites are installed."
+}
+
+function start_cluster() {
+    echo "--- 2. Starting Minikube Cluster (${CLUSTER_PROFILE}) ---"
+    minikube start \
+      --profile "${CLUSTER_PROFILE}" \
+      --driver=docker \
+      --cpus=4 \
+      --memory=4g \
+      --kubernetes-version=${KUBERNETES_VERSION}
+
+    minikube profile "${CLUSTER_PROFILE}"
+    echo "--- 3. Waiting for Kubernetes API server to be ready ---"
+    kubectl wait --for=condition=Available=True deployment/coredns -n kube-system --timeout=300s
+}
+
+function start_tunnel() {
+    echo "--- 4. Starting Minikube Tunnel in the background ---"
+    stop_tunnel # Ensure no old tunnels are running before starting a new one.
+
+    echo "🔑 You may be prompted for your sudo password to start the network tunnel."
+    minikube tunnel --profile "${CLUSTER_PROFILE}" > /tmp/minikube_tunnel.log 2>&1 &
+
+    echo "   Waiting for the tunnel daemon to initialize..."
+    sleep 5
+
+    local TUNNEL_PID=$(pgrep -f "minikube tunnel --profile ${CLUSTER_PROFILE}")
+
+    if [ -z "$TUNNEL_PID" ]; then
+        echo "❌ ERROR: Failed to start or find the minikube tunnel process!"
+        echo "   Check logs for errors: cat /tmp/minikube_tunnel.log"
+        exit 1
+    fi
+
+    echo "$TUNNEL_PID" > "$TUNNEL_PID_FILE"
+    echo "🚀 Tunnel daemon is running with PID $(cat $TUNNEL_PID_FILE)."
+    sleep 5 # Give tunnel a moment to establish routes.
+}
+
+function install_knative() {
+    echo "--- 5. Installing Knative components ---"
+    echo "   - Installing Knative Serving (v${KNATIVE_VERSION})..."
+    kubectl apply -f https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml
+    kubectl apply -f https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml
+
+    echo "   - Installing Kourier networking layer..."
+    kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-${KNATIVE_VERSION}/kourier.yaml
+
+    echo "   - Configuring Knative Serving to use Kourier..."
+    kubectl patch configmap/config-network \
+      --namespace knative-serving \
+      --type merge \
+      --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+
+    echo "   - Installing Knative Eventing (v${KNATIVE_VERSION})..."
+    kubectl apply -f https://github.com/knative/eventing/releases/download/knative-${KNATIVE_VERSION}/eventing-crds.yaml
+    kubectl apply -f https://github.com/knative/eventing/releases/download/knative-${KNATIVE_VERSION}/eventing-core.yaml
+}
+
+function verify_installation() {
+    echo "--- 6. Waiting for all Knative deployments to be ready ---"
+    kubectl wait --for=condition=Available=True deployment --all -n knative-serving --timeout=300s
+    kubectl wait --for=condition=Available=True deployment --all -n knative-eventing --timeout=300s
+    kubectl wait --for=condition=Available=True deployment --all -n kourier-system --timeout=300s
+
+    echo "--- 7. Verifying network setup ---"
+    local EXTERNAL_IP=$(kubectl get svc/kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "not-found")
+    if [ -z "$EXTERNAL_IP" ] || [ "$EXTERNAL_IP" == "not-found" ]; then
+       echo "❌ ERROR: Kourier service did not get an External IP from the tunnel."
+       exit 1
+    fi
+
+    echo ""
+    echo "✅✅✅ --- Cluster is READY! --- ✅✅✅"
+    echo ""
+    echo "   Minikube Profile:   ${CLUSTER_PROFILE}"
+    echo "   Knative Version:    ${KNATIVE_VERSION}"
+    echo "   Kubernetes Version: ${KUBERNETES_VERSION}"
+    echo "   Kourier IP Address: ${EXTERNAL_IP}"
+    echo "   Tunnel PID:         $(cat $TUNNEL_PID_FILE) (running in background)"
+    echo ""
+    echo "Tip: To enable easy browser access, configure a domain like sslip.io."
+}
+
+function stop_tunnel() {
+    echo "--- Stopping Minikube Tunnel ---"
+    if [ -f "$TUNNEL_PID_FILE" ]; then
+        echo "   Killing tunnel process with PID $(cat $TUNNEL_PID_FILE)..."
+        kill $(cat $TUNNEL_PID_FILE) || true
+        rm -f "$TUNNEL_PID_FILE"
+    else
+        # Fallback in case the PID file is missing but the process is running
+        pkill -f "minikube tunnel --profile ${CLUSTER_PROFILE}" || echo "   No running tunnel process found to kill."
     fi
 }
 
+function destroy_cluster() {
+    echo "--- Deleting Minikube Cluster (${CLUSTER_PROFILE}) ---"
+    minikube delete --profile "${CLUSTER_PROFILE}"
+}
+
+# ==============================================================================
 # --- Main Logic ---
+# ==============================================================================
+
 ACTION=$1
 
 if [ -z "$ACTION" ]; then
@@ -27,94 +154,17 @@ fi
 
 case "$ACTION" in
     start)
-        echo "--- Checking prerequisites ---"
-        check_command minikube
-        check_command kn
-        check_command docker
-
-        echo "--- Starting Minikube Cluster (${CLUSTER_PROFILE}) ---"
-        minikube start \
-          --profile "${CLUSTER_PROFILE}" \
-          --driver=docker \
-          --cpus=4 \
-          --memory=7g \
-          --kubernetes-version=${KUBERNETES_VERSION}
-
-        minikube profile "${CLUSTER_PROFILE}"
-
-        echo "--- Waiting for Kubernetes API server to be ready ---"
-        kubectl wait --for=condition=Available=True deployment/coredns -n kube-system --timeout=300s
-
-        echo "--- Starting Minikube Tunnel in the background (BEFORE Knative install) ---"
-        # The tunnel must be running *before* installing Kourier so it can get an IP.
-        if [ -f "$TUNNEL_PID_FILE" ]; then
-            echo "Tunnel PID file found. Killing existing tunnel..."
-            kill $(cat $TUNNEL_PID_FILE) || true
-            rm -f "$TUNNEL_PID_FILE"
-        fi
-        minikube tunnel --profile "${CLUSTER_PROFILE}" &
-        echo $! > "$TUNNEL_PID_FILE"
-        echo "Tunnel started with PID $(cat $TUNNEL_PID_FILE). Giving it a moment to establish..."
-        sleep 10 # Give tunnel a generous amount of time to be ready, in X seconds
-
-
-        # ===================================================================
-        # STEP 3: Install Knative APPLICATIONS onto the cluster
-        # This is where Kourier is actually installed.
-        # ===================================================================
-        echo "--- Installing Knative Serving ---"
-        kubectl apply -f https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-crds.yaml
-        kubectl apply -f https://github.com/knative/serving/releases/download/knative-${KNATIVE_VERSION}/serving-core.yaml
-
-        echo "--- Installing Kourier networking layer ---"
-        # THIS LINE INSTALLS KOURIER
-        kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-${KNATIVE_VERSION}/kourier.yaml
-
-        echo "--- Configuring Knative Serving to use Kourier ---"
-        # THIS LINE TELLS KNATIVE TO USE THE KOURIER WE JUST INSTALLED
-        kubectl patch configmap/config-network \
-          --namespace knative-serving \
-          --type merge \
-          --patch '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
-
-        echo "--- Installing Knative Eventing ---"
-        kubectl apply -f https://github.com/knative/eventing/releases/download/knative-${KNATIVE_VERSION}/eventing-crds.yaml
-        kubectl apply -f https://github.com/knative/eventing/releases/download/knative-${KNATIVE_VERSION}/eventing-core.yaml
-
-        # ===================================================================
-        # STEP 4: Wait for all installed applications to become ready
-        # ===================================================================
-        echo "--- Waiting for all Knative components to be ready ---"
-        kubectl wait --for=condition=Available=True deployment --all -n knative-serving --timeout=300s
-        kubectl wait --for=condition=Available=True deployment --all -n knative-eventing --timeout=300s
-        kubectl wait --for=condition=Available=True deployment --all -n kourier-system --timeout=300s
-
-        echo "--- Setting docker-env for minikube ---"
-        #eval $(minikube -p "${CLUSTER_PROFILE}" docker-env)
-
-        echo "--- Cluster is READY! ---"
-        echo "Minikube Profile: ${CLUSTER_PROFILE}"
-        echo "Knative is installed."
-        echo "Tunnel is running."
-        echo "You can now deploy your applications."
+        check_prerequisites
+        start_cluster
+        start_tunnel
+        install_knative
+        verify_installation
         ;;
-
     destroy)
-        echo "--- Stopping Minikube Tunnel ---"
-        if [ -f "$TUNNEL_PID_FILE" ]; then
-            echo "Killing tunnel process with PID $(cat $TUNNEL_PID_FILE)..."
-            kill $(cat $TUNNEL_PID_FILE) || echo "Tunnel process not found."
-            rm -f "$TUNNEL_PID_FILE"
-        else
-            echo "Tunnel PID file not found. Nothing to stop."
-        fi
-
-        echo "--- Deleting Minikube Cluster (${CLUSTER_PROFILE}) ---"
-        minikube delete --profile "${CLUSTER_PROFILE}"
-
+        stop_tunnel
+        destroy_cluster
         echo "--- Cleanup Complete ---"
         ;;
-
     *)
         echo "Invalid action: ${ACTION}"
         echo "Usage: $0 <start|destroy>"
