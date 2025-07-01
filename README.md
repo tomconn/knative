@@ -118,7 +118,7 @@ The `docker buildx` command handles building for multiple platforms and pushing 
 
 ```bash
 # Define the image name
-export IMAGE_NAME="ghcr.io/${GITHUB_USER}/knative-event-display:latest"
+export IMAGE_NAME="ghcr.io/${GITHUB_USER}/event-display:latest"
 
 # Build for both ARM64 and AMD64 and push to the registry
 docker buildx build \
@@ -166,12 +166,7 @@ spec:
   template:
     spec:
       containers:
-        - image: ghcr.io/<YOUR_GITHUB_USERNAME>/knative-event-display:latest # <-- IMPORTANT: REPLACE THIS
-          ports:
-            - containerPort: 8080
-          env:
-            - name: PORT
-              value: "8080"
+        - image: ghcr.io/<YOUR_GITHUB_USERNAME>/event-display:latest
 ```
 
 Apply this configuration to your cluster:
@@ -207,6 +202,134 @@ You should see output similar to this, appearing once every minute:
 
 ---
 
+Here is the `scripts/run-event-display.sh` script and the updated `README.md` section to explain its usage.
+
+---
+
+### 1. The `scripts/run-event-display.sh` Script
+
+Create a new file at `scripts/run-event-display.sh` and add the following content. The script is designed to be run from the project root and handles the entire deployment and verification process.
+
+**`scripts/run-event-display.sh`**
+```bash
+#!/bin/bash
+
+# ==============================================================================
+# Knative Event Display Deployment Script
+#
+# This script automates the deployment of the event-display application and its
+# corresponding PingSource. It handles cleanup, deployment, and verification,
+# providing clear instructions for the final manual check.
+#
+# ==============================================================================
+
+# Exit immediately if a command exits with a non-zero status.
+set -e
+
+# --- Configuration ---
+SERVICE_NAME="event-display"
+
+# --- Path and Context Setup ---
+# This makes the script runnable from any directory within the project.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/.." &> /dev/null && pwd)
+DEPLOY_FILE_PATH="${PROJECT_ROOT}/apps/event-display/deploy.yaml"
+
+# --- Pre-flight Check ---
+if [ ! -f "$DEPLOY_FILE_PATH" ]; then
+    echo "❌ ERROR: Deployment file not found at '${DEPLOY_FILE_PATH}'"
+    exit 1
+fi
+
+echo "--- 1. Cleaning up existing resources from ${DEPLOY_FILE_PATH} ---"
+# Use --ignore-not-found to prevent errors if the resources don't exist.
+kubectl delete -f "${DEPLOY_FILE_PATH}" --ignore-not-found=true
+echo "   (Waiting a moment for resources to terminate...)"
+sleep 5 # A small sleep helps prevent race conditions on busy clusters.
+
+echo ""
+echo "--- 2. Applying new deployment from ${DEPLOY_FILE_PATH} ---"
+echo "   (Ensure your username is correct in the deploy.yaml image path!)"
+kubectl apply -f "${DEPLOY_FILE_PATH}"
+
+echo ""
+echo "--- 3. Waiting for service '${SERVICE_NAME}' to become ready ---"
+echo "   (This may take a minute while the container image is pulled...)"
+# We use `kubectl wait` on the Knative service resource (ksvc) for reliability.
+# This is the most robust way to wait for a service to be fully operational.
+kubectl wait --for=condition=Ready=True ksvc/${SERVICE_NAME} --timeout=180s
+echo "✅ Service '${SERVICE_NAME}' is ready!"
+
+echo ""
+echo "--- 4. Displaying running pods for the service ---"
+# Show the user the pod that was successfully created.
+kubectl get pods -l serving.knative.dev/service=${SERVICE_NAME}
+
+echo ""
+echo "✅✅✅ --- Deployment successful! --- ✅✅✅"
+echo ""
+echo "The PingSource has been created and will send an event every minute."
+echo "To verify that your application is receiving events, run the following"
+echo "command in your terminal and wait for log messages to appear:"
+echo ""
+echo "   kubectl logs -l serving.knative.dev/service=${SERVICE_NAME} -c user-container --follow"
+echo ""
+```
+
+---
+
+### 2. Updated `README.md` Section
+
+This section replaces the previous manual `kubectl apply` instructions, guiding the user to use the new, convenient script instead.
+
+---
+
+### 5. Deploy and Test the ping/event-display application to verify functionality
+
+With the cluster running and the container image pushed, the final step is to deploy our eventing workflow. The `run-event-display.sh` script automates this entire process.
+
+#### Ensure `deploy.yaml` is Correct
+
+Before running the script, double-check your `apps/event-display/deploy.yaml` file. The `image` path must point to the container image you pushed in the previous step.
+
+#### Make the Script Executable
+
+If you haven't already, give the new script execute permissions.
+```bash
+chmod +x scripts/run-event-display.sh
+```
+
+#### Run the Deployment Script
+
+Execute the script from the root of the project. It will handle cleaning up old resources, deploying the new ones, and verifying that the service starts correctly.
+
+```bash
+./scripts/run-event-display.sh
+```
+The script will provide status updates and will wait until your `event-display` service is fully ready.
+
+#### Step 5.4: Verify Event Receipt
+
+Once the script completes successfully, it will provide you with the final command needed to see your application in action.
+
+1.  **Wait for the first event:** The `PingSource` is configured to send an event once every minute.
+2.  **Watch the logs:** Run the command provided by the script's output to follow the logs of your running container.
+
+    ```bash
+    kubectl logs -l serving.knative.dev/service=event-display -c user-container --follow
+    ```
+
+You have successfully completed the entire workflow when you see the following output appear in your terminal, repeating every minute:
+
+```
+Received a CloudEvent!
+  - Type: dev.knative.sources.ping
+  - Source: /apis/v1/namespaces/default/pingsources/cron-ping-source
+  - Subject:
+  - Data: {"message":"Hello from Knative Eventing!"}
+```
+---
+
 ## 6. Cleanup
 
 When you are finished, you can completely remove the cluster and all related resources by running the `destroy` command.
@@ -216,140 +339,3 @@ When you are finished, you can completely remove the cluster and all related res
 ```
 
 This will stop the tunnel process and delete the Minikube cluster, returning your system to a clean state.
-
-
-# Prompt
-
-Create demo that uses a bash script to create a minkube cluster to demonstrate an end to end knative example publish/consumer application using cloudevents.io 
-
-The example will be run on MacOS (Apple silicon/ARM64). It will use the latest Rancher Desktop 1.19.3.
-The latest minikube will be used as the kubernetes cluster.
-The example app should use the latest go version 1.24. 
-The example will use the latest knative 1.17. Knative will be setup using brew installing kn and kn-extensions for quickstarts.
-Use a minikube cluster to create a knative app that processes cloudevents.io (just simple ping events). The publisher will be invoked with an user inputted string, invoked using curl. The event will be sent to the consumer. The consumer will log the message to standard out. Both the publisher and consumer will scale to zero after 10 minutes of inactivity. 
-It will setup and launch
-	```# ensure at least 3+ CPU and 4GB+ of RAM
-	brew install knative-extensions/kn-plugins/quickstart
-	kn quickstart minikube```
-	in a seperate process to enable curl calls to the producer.
-The golang, event-producer and event-consumer, will be built locally using go cli and the packages tagged and pushed to the public repository https://github.com/tomconn?tab=packages 
-
-```example of build and package deploy to https://github.com/tomconn?tab=packages
-# Use the event-producer and event-consumer 
-# Build, tag and push
-docker login ghcr.io
-    <github token classic>
-
-# From the root of your project directory
-docker build -t event-producer:v1 ./apps/event-producer
-docker build -t event-consumer:v1 ./apps/event-consumer
-
-# tag
-docker tag event-producer:v1 ghcr.io/tomconn/event-producer:v1
-docker tag event-consumer:v1 ghcr.io/tomconn/event-consumer:v1
-
-# push
-docker push ghcr.io/tomconn/event-producer:v1
-docker push ghcr.io/tomconn/event-consumer:v1
-```
-
-The tunnel will allow access to knative
-```
-# start tunnel in seperate terminal
-minikube tunnel --profile knative
-```
-
-The producer/consumer will be accessible from curl and kubectl logs.
-```
-# using a pod in cluster
-kubectl run curl-pod --image=curlimages/curl -- sleep infinity
-kubectl exec curl-pod -- curl -s  http://hello.default.svc.cluster.local
-
-# using the loadbalancer
-kubectl get ksvc hello
-NAME    URL                                       LATESTCREATED   LATESTREADY   READY   REASON
-hello   http://hello.default.127.0.0.1.sslip.io   hello-00001     hello-00001   True    
-% curl http://hello.default.127.0.0.1.sslip.io
-Hello World!
-
-curl http://hello.default.127.0.0.1.sslip.io
-```
-Provide full instructions on this setup and the example producer/consumer code. 
-Generate instructions on creating the golang producer/consumer and how to push to ghcr.io/tomconn. Keep the code simple and modular
-Generate a script to create and destroy minikube. The scripts should include the launching and stopping of the minikube tunnel. Ensure the script uses environment variables to allow reuse with other package registeries.
-There should be a script for the building, packaging and push to repository of the producer/consumer apps. And another script for the starting and stopping of the minikube knative cluster and tunnels.
-Validate all the code and config for syntax and semantic errors.
-
-
-
-
-
-
-# kind-knative
-Use a minikube cluster to create a knative app that processes cloudevents.io (simple ping events)
-
-Install
-1. Rancher Desktop
-	# add the location of docker if using Rancher Desktop
-	export DOCKER_HOST=unix:///Users/thomasconnolly/.rd/docker.sock
-2. Install 
-
-
-brew install knative/client/kn
-
-# ensure 3+ CPU and 4GB+ of RAM
-brew install knative-extensions/kn-plugins/quickstart
-kn quickstart minikube
-
-# start tunnel in seperate terminal
-minikube tunnel --profile knative
-
-
-# using a pod in cluster
-kubectl run curl-pod --image=curlimages/curl -- sleep infinity
-kubectl exec curl-pod -- curl -s  http://hello.default.svc.cluster.local
-
-# using the LB
-kubectl get ksvc hello
-NAME    URL                                       LATESTCREATED   LATESTREADY   READY   REASON
-hello   http://hello.default.127.0.0.1.sslip.io   hello-00001     hello-00001   True    
-(base) thomasconnolly@Thomass-MacBook-Air kind-knative % curl http://hello.default.127.0.0.1.sslip.io
-Hello World!
-
-curl http://hello.default.127.0.0.1.sslip.io
-
-# Use the event-producer and event-consumer 
-# Build, tag and push
-docker login ghcr.io
-    <github token classic>
-
-# From the root of your project directory
-docker build -t event-producer:v1 ./apps/event-producer
-docker build -t event-consumer:v1 ./apps/event-consumer
-
-# tag
-docker tag event-producer:v1 ghcr.io/tomconn/event-producer:v1
-docker tag event-consumer:v1 ghcr.io/tomconn/event-consumer:v1
-
-# push
-docker push ghcr.io/tomconn/event-producer:v1
-docker push ghcr.io/tomconn/event-consumer:v1
-
-
-
-echo "--> Deploying applications with the 'kn' CLI from ghcr.io..."
-kn broker create default || true
-kn trigger delete event-consumer-trigger --namespace default || true
-kn service delete event-producer --namespace default || true
-kn service delete event-consumer --namespace default || true
-
-export DOCKER_USERNAME="tomconn"
-
-kn service create event-consumer --image "ghcr.io/${DOCKER_USERNAME}/event-consumer:v1"
-kn service create event-producer --image "ghcr.io/${DOCKER_USERNAME}/event-producer:v1" --env K_SINK="http://default-broker.default.svc.cluster.local"
-kn trigger create event-consumer-trigger --broker default --sink ksvc:event-consumer
-
-echo -e "\n\n✅🏆 VICTORY ACHIEVED 🏆✅"
-echo "The demo is ready."
-echo "\nSend an event: curl http://event-producer.default.127.0.0.1.sslip.io"
-echo "\nCheck logs:   kubectl logs -l serving.knative.dev/service=event-consumer -c user-container"

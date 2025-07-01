@@ -1,0 +1,58 @@
+# Note: Before applying this file, ensure the following environment variables are set:
+# export GHCR_USER="your-github-username"
+# export IMAGE_TAG="v1"
+#
+# Then apply using: envsubst < deploy/services.yaml | kubectl apply -f -
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: event-publisher
+  annotations:
+    # Scale to zero after 10 minutes of inactivity
+    autoscaling.knative.dev/scale-down-delay: "10m"
+spec:
+  template:
+    spec:
+      containers:
+        - image: ghcr.io/${GHCR_USER}/event-publisher:${IMAGE_TAG}
+          ports:
+            - containerPort: 8080
+          env:
+            # This is automatically injected by Knative when we create a trigger.
+            # However, we point it to the default broker for clarity and direct invocation.
+            - name: K_SINK
+              value: "http://broker-ingress.knative-eventing.svc.cluster.local/default/default"
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: event-consumer
+  annotations:
+    # Scale to zero after 10 minutes of inactivity
+    autoscaling.knative.dev/scale-down-delay: "10m"
+spec:
+  template:
+    spec:
+      containers:
+        - image: ghcr.io/${GHCR_USER}/event-consumer:${IMAGE_TAG}
+          ports:
+            - containerPort: 8080
+---
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: ping-trigger
+spec:
+  # The default broker created by the quickstart is named 'default'
+  broker: default
+  # Filter for events of our specific type
+  filter:
+    attributes:
+      type: com.example.ping
+  # Send matching events to our consumer service
+  subscriber:
+    ref:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+      name: event-consumer
