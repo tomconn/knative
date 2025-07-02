@@ -278,13 +278,7 @@ echo ""
 
 ---
 
-### 2. Updated `README.md` Section
-
-This section replaces the previous manual `kubectl apply` instructions, guiding the user to use the new, convenient script instead.
-
----
-
-### 5. Deploy and Test the ping/event-display application to verify functionality
+### 2. Deploy and Test the ping/event-display application to verify functionality
 
 With the cluster running and the container image pushed, the final step is to deploy our eventing workflow. The `run-event-display.sh` script automates this entire process.
 
@@ -308,7 +302,7 @@ Execute the script from the root of the project. It will handle cleaning up old 
 ```
 The script will provide status updates and will wait until your `event-display` service is fully ready.
 
-#### Step 5.4: Verify Event Receipt
+#### Verify Event Receipt
 
 Once the script completes successfully, it will provide you with the final command needed to see your application in action.
 
