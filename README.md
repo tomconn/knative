@@ -31,6 +31,12 @@ This provides the Docker environment that Minikube will use.
 - **Download and install [Rancher Desktop](https://rancherdesktop.io/)**.
 - **Important Configuration**: During the first-run wizard or in `Preferences -> Container Engine`, ensure you select **`dockerd (moby)`** as the container runtime. This is required for Minikube's Docker driver.
 
+If there is a docker.sock error export the following:
+
+```bash
+export DOCKER_HOST=unix:///$HOME/.rd/docker.sock
+```
+
 ### b. Command-Line Tools (via Homebrew)
 
 If you don't have Homebrew, [install it first](https://brew.sh/). Then, open your terminal and run:
