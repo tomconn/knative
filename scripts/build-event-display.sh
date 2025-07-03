@@ -29,7 +29,6 @@
 set -e
 
 # --- Configuration ---
-# Corrected image base name
 IMAGE_NAME_BASE="event-display"
 IMAGE_TAG="latest"
 

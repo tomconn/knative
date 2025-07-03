@@ -15,7 +15,6 @@ RUN go mod download
 COPY . .
 
 # Build the application. The source is in the current directory (`.`).
-# This is the corrected line.
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -v -o /app/event-display .
 
