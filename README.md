@@ -37,6 +37,24 @@ If there is a docker.sock error export the following:
 export DOCKER_HOST=unix:///$HOME/.rd/docker.sock
 ```
 
+Minikube defaults to 4 cpus and 7GB memory. Ensure Rancher Desktop has been setup 'Preferences' - 'Virtual Machine' - 'Hardware'. Set the '# CPUs' and 'Memory(GB)'.
+
+```bash
+function start_cluster() {
+    echo "--- 2. Starting Minikube Cluster (${CLUSTER_PROFILE}) ---"
+    minikube start \
+      --profile "${CLUSTER_PROFILE}" \
+      --driver=docker \
+      --cpus=4 \
+      --memory=7g \
+      --kubernetes-version=${KUBERNETES_VERSION}
+
+    minikube profile "${CLUSTER_PROFILE}"
+    echo "--- 3. Waiting for Kubernetes API server to be ready ---"
+    kubectl wait --for=condition=Available=True deployment/coredns -n kube-system --timeout=300s
+}
+```
+
 ### b. Command-Line Tools (via Homebrew)
 
 If you don't have Homebrew, [install it first](https://brew.sh/). Then, open your terminal and run:
