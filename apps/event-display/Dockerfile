@@ -1,5 +1,3 @@
-# Dockerfile
-
 # --- Stage 1: The Builder ---
 # This stage uses the official Go image to compile our application.
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder

@@ -149,7 +149,6 @@ Now we will deploy two Knative components:
 Create a file named `deploy.yaml` with the following content. **Remember to replace `<YOUR_GITHUB_USERNAME>`** with your actual GitHub username.
 
 ```yaml
-# deploy.yaml
 apiVersion: sources.knative.dev/v1
 kind: PingSource
 metadata:
